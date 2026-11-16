@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""tools/lab — thử nghiệm nhanh (adhoc) trong lab/. Luật: lab/README.md.
+
+  tools/lab new <slug>                 tạo lab/YYYY-MM-DD-<slug>/ + NOTES.md, in đường dẫn
+  tools/lab ls                         liệt kê thử nghiệm + tuổi (>30 ngày: nhắc dọn)
+  tools/lab secrets                    nhóm secret có sẵn + tên biến môi trường (KHÔNG in giá trị)
+  tools/lab run <nhóm>[,<nhóm>] -- <lệnh…>
+                                       chạy lệnh với secret của các nhóm đó trong biến môi trường
+  tools/lab repo <thư-mục-lab>         đẩy thư mục lab lên repo GitHub PRIVATE infra-lab-<slug> (tạo nếu chưa có)
+
+Secret lấy từ secrets/operator.enc.yaml, giải mã trong bộ nhớ, không ghi ra đĩa.
+Tên biến = đường dẫn key viết hoa, nối bằng "_":  databricks.token -> DATABRICKS_TOKEN.
+"""
+import datetime
+import os
+import re
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LAB = os.path.join(ROOT, "lab")
+SECRETS = os.path.join(ROOT, "secrets", "operator.enc.yaml")
+KEYFILE = os.path.join(ROOT, "secrets", "masterkey", "keys.txt")
+STALE_DAYS = 30
+# tên biến mà CLI/SDK phổ biến đọc sẵn, ngoài tên sinh tự động
+ALIASES = {"GITHUB_TOKEN": ["GH_TOKEN"], "GITHUB_PAT": ["GITHUB_TOKEN", "GH_TOKEN"]}
+
+NOTES = """# {slug}
+
+- **Ngày**: {date}
+- **Mục tiêu**: <muốn kiểm chứng điều gì>
+
+## Đã thử
+
+## Kết quả
+
+## Kết luận
+<bỏ | ghi note vào docs/ | nâng thành app>
+"""
+
+
+def die(msg):
+    print(f"lab: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def load_secrets():
+    import yaml
+
+    env = dict(os.environ, SOPS_AGE_KEY_FILE=KEYFILE)
+    r = subprocess.run(["sops", "-d", SECRETS], capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        die(f"không giải mã được {SECRETS}: {r.stderr.strip()}")
+    return yaml.safe_load(r.stdout) or {}
+
+
+def flatten(node, prefix):
+    """{'token': 'x', 'zones': {'a.com': 'y'}} -> {PREFIX_TOKEN: x, PREFIX_ZONES_A_COM: y}"""
+    out = {}
+    if isinstance(node, dict):
+        for k, v in node.items():
+            out.update(flatten(v, f"{prefix}_{k}"))
+    elif node is not None:
+        name = re.sub(r"[^A-Za-z0-9]+", "_", prefix).strip("_").upper()
+        out[name] = str(node)
+    return out
+
+
+def group_env(data, group):
+    if group not in data:
+        die(f"không có nhóm '{group}'. Có: {', '.join(sorted(data)) or '(trống)'}")
+    env = flatten(data[group], group)
+    for name, extra in ALIASES.items():
+        if name in env:
+            for a in extra:
+                env.setdefault(a, env[name])
+    return env
+
+
+def cmd_new(args):
+    if len(args) != 1 or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", args[0]):
+        die("dùng: tools/lab new <slug>   (slug: chữ thường, số, gạch ngang)")
+    date = datetime.date.today().isoformat()
+    path = os.path.join(LAB, f"{date}-{args[0]}")
+    if os.path.exists(path):
+        die(f"đã có {path}")
+    os.makedirs(path)
+    with open(os.path.join(path, "NOTES.md"), "w") as f:
+        f.write(NOTES.format(slug=args[0], date=date))
+    print(path)
+
+
+def cmd_ls(_):
+    today = datetime.date.today()
+    names = sorted(n for n in os.listdir(LAB) if os.path.isdir(os.path.join(LAB, n))) if os.path.isdir(LAB) else []
+    if not names:
+        print("(chưa có thử nghiệm nào)")
+        return
+    for n in names:
+        m = re.match(r"(\d{4}-\d{2}-\d{2})-", n)
+        age = (today - datetime.date.fromisoformat(m.group(1))).days if m else None
+        flag = "  <- cũ, nên dọn" if age is not None and age > STALE_DAYS else ""
+        print(f"{n:50s} {'?' if age is None else age:>4} ngày{flag}")
+
+
+def cmd_secrets(_):
+    data = load_secrets()
+    for g in sorted(data):
+        print(f"{g}: {', '.join(sorted(group_env(data, g)))}")
+
+
+def cmd_run(args):
+    if "--" not in args or args.index("--") != 1 or len(args) < 3:
+        die("dùng: tools/lab run <nhóm>[,<nhóm>] -- <lệnh…>")
+    data = load_secrets()
+    env = dict(os.environ)
+    for g in args[0].split(","):
+        env.update(group_env(data, g))
+    os.execvpe(args[2], args[2:], env)
+
+
+GITIGNORE = ".venv/\nnode_modules/\n__pycache__/\n.env\n.env.*\n*.log\n"
+
+
+def cmd_repo(args):
+    """Thư mục lab tự nó là 1 repo git riêng (lab/ bị core ignore) -> GitHub private infra-lab-<slug>."""
+    if len(args) != 1:
+        die("dùng: tools/lab repo <thư-mục-lab>   (tên trong lab/, vd 2026-11-15-databricks-connect)")
+    name = os.path.basename(args[0].rstrip("/"))
+    path = os.path.join(LAB, name)
+    if not os.path.isdir(path):
+        die(f"không có {path}")
+    repo = "infra-lab-" + re.sub(r"^\d{4}-\d{2}-\d{2}-", "", name)
+    env = dict(os.environ, **group_env(load_secrets(), "github"))
+    git = ["git", "-C", path, "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"]
+
+    def run(cmd, check=True):
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        if check and r.returncode != 0:
+            die(f"{' '.join(cmd[:6])}…: {r.stderr.strip() or r.stdout.strip()}")
+        return r
+
+    gi = os.path.join(path, ".gitignore")
+    if not os.path.exists(gi):
+        open(gi, "w").write(GITIGNORE)
+    if not os.path.isdir(os.path.join(path, ".git")):
+        run(["git", "-C", path, "init", "-q", "-b", "main"])
+    run(["git", "-C", path, "add", "-A"])
+    if run(["git", "-C", path, "diff", "--cached", "--quiet"], check=False).returncode != 0:
+        run(["git", "-C", path, "commit", "-q", "-m", f"lab: snapshot {datetime.date.today().isoformat()}"])
+    if run(["git", "-C", path, "remote", "get-url", "origin"], check=False).returncode != 0:
+        owner = run(["gh", "api", "user", "-q", ".login"]).stdout.strip()
+        if run(["gh", "repo", "view", f"{owner}/{repo}"], check=False).returncode != 0:
+            run(["gh", "repo", "create", f"{owner}/{repo}", "--private", "--description", f"Lab experiment: {name}"])
+        run(["git", "-C", path, "remote", "add", "origin", f"https://github.com/{owner}/{repo}.git"])
+    run(git + ["push", "-q", "-u", "origin", "main"])
+    print(run(["git", "-C", path, "remote", "get-url", "origin"]).stdout.strip())
+
+
+def main():
+    cmds = {"new": cmd_new, "ls": cmd_ls, "secrets": cmd_secrets, "run": cmd_run, "repo": cmd_repo}
+    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
+        print(__doc__.strip())
+        sys.exit(0 if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help") else 1)
+    cmds[sys.argv[1]](sys.argv[2:])
+
+
+if __name__ == "__main__":
+    main()

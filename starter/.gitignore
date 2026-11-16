@@ -1,0 +1,17 @@
+# master key + mọi dạng plaintext
+secrets/masterkey/
+keys.txt
+*.agekey
+*.dec.yaml
+.env
+.env.local
+.env.*.local
+
+node_modules/
+dist/
+__pycache__/
+.DS_Store
+
+# lab/ — thử nghiệm adhoc, chỉ local
+/lab/*
+!/lab/README.md

@@ -1,0 +1,12 @@
+# Footprint của app trong hạ tầng. Sửa file này → sửa luôn fleet.md + hosts/<vps>.md.
+name: my-app
+description: "<một dòng>"
+services:
+  web: { code: web, runtime: node }        # thư mục code + cách chạy
+environments:
+  prod:
+    vps: vps-1
+    services:
+      web: { port: 10001, domain: app.example.com, process: my-app }   # chỉ nghe 127.0.0.1, nginx đứng trước
+    db: { engine: sqlite, path: /srv/my-app/data/app.db }
+integrations: []                            # tên dịch vụ ngoài app dùng (key nằm ở envs/<env>/.env.enc.yaml)

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# tools/ssh <vps> [lệnh…] — SSH vào máy khai trong secrets/vps.enc.yaml.
+# Lần đầu: chép private key của máy đó ra ~/.ssh/infra_<vps> (quyền 600); các lần sau dùng lại.
+set -euo pipefail
+VPS="${1:?dùng: tools/ssh <vps> [lệnh…]}"; shift
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export SOPS_AGE_KEY_FILE="$ROOT/secrets/masterkey/keys.txt"
+KEY="$HOME/.ssh/infra_$VPS"
+read -r IP USER PORT < <(sops -d "$ROOT/secrets/vps.enc.yaml" | KEYFILE="$KEY" python3 -c "
+import os, sys, yaml
+h = (yaml.safe_load(sys.stdin) or {}).get('$VPS')
+if not h: sys.exit('không có $VPS trong secrets/vps.enc.yaml')
+k = os.environ['KEYFILE']
+if not os.path.exists(k):
+    os.makedirs(os.path.dirname(k), mode=0o700, exist_ok=True)
+    fd = os.open(k, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.write(fd, h['ssh_private_key'].strip().encode() + b'\n'); os.close(fd)
+print(h['ip'], h.get('ssh_user', 'root'), h.get('ssh_port', 22))")
+exec ssh -i "$KEY" -o IdentitiesOnly=yes -p "$PORT" "$USER@$IP" "$@"
