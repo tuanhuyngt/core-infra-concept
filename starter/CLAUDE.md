@@ -7,6 +7,7 @@ Repo = **danh bạ hạ tầng + monorepo app**. Mọi thứ có đúng MỘT ng
 |---|---|
 | App / service nào chạy ở máy nào | `fleet.md` |
 | 1 máy: specs, access, đang chạy gì | `hosts/<vps>.md` |
+| Domain / subdomain trỏ đâu | `domains.md` |
 | IP / SSH key / pass của máy | `secrets/vps.enc.yaml` (`tools/secret show …`, vào máy: `tools/ssh <vps>`) |
 | Credential **vận hành** (GitHub, Cloudflare, cloud…) — chỉ dùng local, KHÔNG lên VPS | `secrets/operator.enc.yaml` |
 | 1 app: chạy ở đâu, port, domain, DB | `apps/<app>/app.yaml` |
@@ -33,6 +34,15 @@ Repo = **danh bạ hạ tầng + monorepo app**. Mọi thứ có đúng MỘT ng
   `secrets/vps.enc.yaml` → viết `hosts/<vps>.md` + dòng trong `fleet.md`.
 - Service chỉ nghe `127.0.0.1:<port>`, nginx đứng trước. Mỗi port chỉ một chủ — ghi trong `fleet.md`.
 - **Hành động khó hoàn tác trên prod** (deploy, xoá dữ liệu, restart, đổi DNS) → hỏi user trước.
+
+## Đưa app lên mạng
+1. Khai `apps/<app>/app.yaml` (máy, port chưa dùng, domain, tên tiến trình) → thêm dòng vào `fleet.md`, `hosts/<vps>.md`, `domains.md`.
+2. Secret: key ở `envs/example.yaml`, giá trị ở `envs/<env>/.env.enc.yaml`.
+3. `deploy/deploy.sh <env>`: render env → rsync lên `/srv/<app>/` (loại `node_modules`, `.git`, dữ liệu, `.env.local`) →
+   cài + build trên máy → `pm2 start`/`reload` → `pm2 save`. Dữ liệu nằm ngoài thư mục code.
+4. nginx: vhost ở `deploy/nginx/<domain>.conf`, `proxy_pass http://127.0.0.1:<port>`, `nginx -t` rồi reload.
+5. DNS: tạo bản ghi bằng API (token trong `secrets/operator.enc.yaml`), ghi vào `domains.md`.
+6. Kiểm tra `curl -I https://<domain>` + `pm2 status`; ghi `## Lịch sử`. **Hỏi user trước khi deploy.**
 
 ## Thử nghiệm: `lab/`
 User nói "adhoc" / "thử nhanh" / "experiment" → `tools/lab new <slug>`, làm trong thư mục đó, secret qua

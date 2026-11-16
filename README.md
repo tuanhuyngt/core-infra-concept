@@ -28,17 +28,21 @@ Ba nguyên tắc:
 CLAUDE.md                 mục lục + luật cho agent (đọc đầu tiên)
 README.md                 giải thích cho người: ý tưởng, cách bắt đầu, lệnh
 fleet.md                  bảng tổng: app nào chạy ở máy nào, port nào đã dùng
+domains.md                danh bạ domain: mỗi subdomain trỏ máy nào, thuộc app nào
 hosts/<máy>.md            mỗi máy một file: specs, cách vào, đang chạy gì
 apps/<app>/               mỗi app một thư mục
   app.yaml                  footprint: service, env, máy, port, domain, DB
   README.md                 mô tả, tech, "## Local dev", "## Lịch sử"
   envs/example.yaml         bộ KEY env chuẩn (không có giá trị thật)
   envs/<env>/.env.enc.yaml  giá trị thật theo env, mã hoá
-  deploy/deploy.sh          deploy 1 env
+  deploy/deploy.sh          deploy 1 env (mục 6)
+  deploy/render-env.sh      giải mã .env.enc.yaml → file .env cho server
+  deploy/nginx/<domain>.conf  vhost bản gốc của app
   <code>/
 secrets/
   vps.enc.yaml              mỗi máy: ip, ssh_user, ssh_port, ssh_private_key, root_password
   operator.enc.yaml         credential vận hành của chủ repo: GitHub, Cloudflare, cloud… (chỉ dùng local)
+  certs.enc.yaml            cert + key HTTPS của từng domain (được chép lên máy cho nginx)
   *.example.yaml            khuôn, không có giá trị thật
   masterkey/keys.txt        MASTER KEY — gitignored
 lab/                      thử nghiệm nhanh; gitignored trừ README.md
@@ -81,6 +85,7 @@ docs/                     tài liệu agent tạo: YYYY-MM-DD-<audit|plan|note|d
   Mỗi port một chủ, ghi trong `fleet.md`.
 - **Onboard máy mới**: tạo SSH key riêng → đẩy public key → tắt đăng nhập password → cất private key vào
   `vps.enc.yaml` → viết `hosts/<máy>.md` + dòng trong `fleet.md` → nhắc chủ repo đổi pass gốc.
+- **Domain**: thêm / đổi / gỡ subdomain → sửa `domains.md` cùng lúc. Bản ghi DNS tạo bằng API, không bấm tay.
 - **Env đồng nhất**: mọi `.env.enc.yaml` của một app khớp đúng bộ key trong `envs/example.yaml`.
 - **Lab**: chủ repo nói "adhoc / thử nhanh / experiment" → làm trong `lab/`, chỉ chạy local, không đụng `apps/` hay
   `fleet.md`. Xong thì hỏi: xoá · ghi bài học vào `docs/` · nâng thành app.
@@ -88,15 +93,48 @@ docs/                     tài liệu agent tạo: YYYY-MM-DD-<audit|plan|note|d
 - **Commit**: `<scope>: <mô tả>`, scope = `infra` hoặc tên app, mỗi commit một scope. Commit / push chỉ khi được bảo.
 - **Lịch sử**: việc lớn trên một app → thêm một dòng có ngày vào `## Lịch sử` trong README của app.
 
-## 6. Việc cần làm (bản tối thiểu)
+## 6. Đưa một app lên mạng (deploy + subdomain)
+**Chuẩn bị máy, làm 1 lần mỗi VPS** (ghi version vào `hosts/<máy>.md`): cài runtime (vd Node LTS), `pm2` (+ `pm2 startup`
+để tự chạy lại sau reboot), `nginx`; firewall chỉ mở 22, 80, 443; chép cert của domain từ `secrets/certs.enc.yaml` vào
+`/etc/ssl/<tên>/` (quyền 600).
+
+**Mỗi app, 6 bước:**
+1. **Khai báo** — `apps/<app>/app.yaml`: máy, port (chọn số chưa có trong `fleet.md`), domain, tên tiến trình, DB.
+   Thêm dòng vào `fleet.md`, `hosts/<máy>.md`, `domains.md`.
+2. **Secret** — liệt kê key ở `envs/example.yaml`, giá trị thật ở `envs/prod/.env.enc.yaml`.
+3. **`deploy/deploy.sh <env>`** — đọc máy/port từ `app.yaml`, IP + key từ `secrets/vps.enc.yaml`, rồi:
+   render env → `rsync` code lên `/srv/<app>/` (loại `node_modules`, `.git`, thư mục dữ liệu, `.env.local`,
+   `.env.*.local`) → trên máy: sao lưu DB, cài thư viện, build → `pm2 start` lần đầu / `pm2 reload` các lần sau → `pm2 save`.
+   Dữ liệu (DB, file upload) nằm ngoài thư mục code để `rsync --delete` không xoá.
+4. **nginx** — vhost lưu ở `deploy/nginx/<domain>.conf`, deploy chép vào `/etc/nginx/sites-enabled/`, `nginx -t`, reload:
+   ```nginx
+   server {
+     listen 443 ssl; server_name app.example.com;
+     ssl_certificate /etc/ssl/<tên>/origin.pem; ssl_certificate_key /etc/ssl/<tên>/origin.key;
+     location / { proxy_pass http://127.0.0.1:<port>; proxy_set_header Host $host;
+                  proxy_set_header X-Forwarded-For $remote_addr; proxy_set_header X-Forwarded-Proto https; }
+   }
+   ```
+5. **DNS** — tạo bản ghi `A <subdomain> → IP máy` bằng API của nhà cung cấp DNS, dùng token trong
+   `secrets/operator.enc.yaml` (vd Cloudflare: `POST /zones/<zone_id>/dns_records`, bật proxy). Ghi vào `domains.md`.
+6. **Kiểm tra** — `curl -I https://<subdomain>` trả 200; `pm2 status` thấy tiến trình online; ghi một dòng vào `## Lịch sử`.
+
+**HTTPS, chọn một:** (a) DNS qua Cloudflare bật proxy + *origin certificate* dạng wildcard `*.domain` (một cert dùng cho mọi
+subdomain, hạn nhiều năm, SSL mode "Full (strict)"); khi đó firewall chỉ cho 80/443 từ dải IP Cloudflare. (b) Let's Encrypt
+bằng `certbot --nginx`, tự gia hạn — không cần `certs.enc.yaml`.
+
+**Deploy là việc trên prod → agent hỏi chủ repo trước khi chạy.**
+
+## 7. Việc cần làm (bản tối thiểu)
 1. Tạo cấu trúc ở mục 2 với: `CLAUDE.md`, `README.md`, `fleet.md` (bảng rỗng), `hosts/_template.md`,
-   `apps/_template/{app.yaml,README.md}`, `secrets/{vps,operator}.example.yaml`, `lab/README.md`, `.sops.yaml`, `.gitignore`.
+   `domains.md` (rỗng),
+   `apps/_template/{app.yaml,README.md,deploy/deploy.sh}`, `secrets/{vps,operator}.example.yaml`, `lab/README.md`, `.sops.yaml`, `.gitignore`.
 2. Viết `setup.sh` và các lệnh ở mục 4 (bash + python3/pyyaml là đủ).
 3. Chạy `setup.sh`, kiểm tra: `tools/secret keys secrets/vps.enc.yaml` in ra tên key; `git status` không thấy master key;
    `tools/lab run github -- env` có `GITHUB_TOKEN`.
 4. Hỏi chủ repo danh sách máy và token, hướng dẫn họ tự điền bằng `tools/secret edit` (agent không cần thấy giá trị).
 5. Nhắc sao lưu master key.
 
-## 7. Thêm sau khi cần (không làm ở bản đầu)
-Hook kiểm tra format commit · service dùng chung nhiều app (auth, mail) · quản lý domain và cert (`domains.md`,
-`secrets/certs.enc.yaml`) · góc riêng cho app làm cho khách · app giám sát các máy.
+## 8. Thêm sau khi cần (không làm ở bản đầu)
+Hook kiểm tra format commit · service dùng chung nhiều app (auth, mail) · góc riêng cho app làm cho khách ·
+app giám sát các máy.

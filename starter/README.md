@@ -9,6 +9,7 @@ trong đó mà không phải đoán. Ý tưởng gốc: **mỗi thông tin chỉ
 | Luật + mục lục cho agent | `CLAUDE.md` | agent đọc file này đầu tiên |
 | App nào chạy ở máy nào | `fleet.md` | bảng tổng |
 | Từng máy chủ | `hosts/<vps>.md` | specs, cách vào, đang chạy gì |
+| Domain / subdomain | `domains.md` | host nào trỏ máy nào, thuộc app nào |
 | Từng app | `apps/<app>/` | `app.yaml` (chạy ở đâu, port, domain) + `README.md` + code + secret riêng |
 | **Mọi credential** | `secrets/*.enc.yaml` | **đã mã hoá** bằng 1 master key → commit lên git được |
 | Master key | `secrets/masterkey/keys.txt` | **không bao giờ commit**; mất = mất hết, lộ = lộ hết → sao lưu offline |
@@ -43,4 +44,5 @@ tools/ssh vps-1
 ## Thêm thứ mới
 - **VPS mới**: thêm khối vào `secrets/vps.enc.yaml` → copy `hosts/_template.md` → thêm dòng vào `fleet.md`.
 - **App mới**: copy `apps/_template/` → `apps/<app>/` → điền `app.yaml` → thêm dòng vào `fleet.md` và `hosts/<vps>.md`.
+- **Đưa app lên mạng** (deploy, nginx, subdomain, HTTPS): 6 bước trong `CLAUDE.md` → "Đưa app lên mạng".
 - **Token mới**: thêm nhóm vào `secrets/operator.enc.yaml` (`<tên>: { <key>: "..." }`) — `tools/lab run <tên> -- …` dùng được ngay.
